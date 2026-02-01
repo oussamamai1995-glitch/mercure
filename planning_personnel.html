@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Planning Mercure — Personnel</title>
+  <style>
+    body{font-family:system-ui;margin:16px;background:#0b1020;color:#e8eeff}
+    .top{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .card{border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:14px;margin:12px 0;background:rgba(255,255,255,.04)}
+    input,button,select{padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:#e8eeff}
+    button{cursor:pointer}
+    .muted{color:#a9b4d6;font-size:13px}
+    .ok{color:#2ee59d}
+    .bad{color:#ff6b6b}
+    .grid{overflow:auto;border:1px solid rgba(255,255,255,.10);border-radius:14px}
+    table{border-collapse:collapse;min-width:1100px;width:100%}
+    th,td{border-bottom:1px solid rgba(255,255,255,.10);padding:10px;vertical-align:top}
+    th{position:sticky;top:0;background:#0b1020;z-index:2}
+    .nameCol{width:220px;position:sticky;left:0;background:#0b1020;z-index:1;border-right:1px solid rgba(255,255,255,.10)}
+    .tag{display:inline-block;padding:3px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.18);margin:2px 4px 2px 0;font-size:12px}
+    .t-asg{background:rgba(138,180,255,.12)}
+    .t-abs{background:rgba(255,107,107,.12)}
+    .t-roulage{background:rgba(255,255,255,.08)}
+    a{color:#8ab4ff;text-decoration:none}
+    pre{white-space:pre-wrap;background:rgba(0,0,0,.35);padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.10);overflow:auto}
+    .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h2 style="margin:0">Planning personnel</h2>
+    <a href="./index.html">← accueil</a>
+    <span id="who" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <div class="bar">
+      <label class="muted">Semaine (lundi)</label>
+      <input id="start" type="date"/>
+
+      <button id="prevWeek">◀ Semaine -1</button>
+      <button id="today">Aujourd’hui</button>
+      <button id="nextWeek">Semaine +1 ▶</button>
+
+      <button id="btnLoad">Charger</button>
+      <button id="btnLogout">Logout</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      Vue fixe : <b>2 semaines</b>.  
+      Cellule = affectation(s) du jour + indispo si dispo (sinon message).
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Console</h3>
+    <pre id="out">(logs)</pre>
+  </div>
+
+  <div class="card">
+    <h3>Planning (salariés)</h3>
+    <div class="grid">
+      <table>
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script type="module">
+  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+  const SUPABASE_URL = "https://hgishjwhpvfxsmvtjgbf.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnaXNoandocHZmeHNtdnRqZ2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MzA5NTYsImV4cCI6MjA4NTIwNjk1Nn0.3BZiQRWivik3h8S9CyHIff3e2F7M0Oudw5rP7dN5-Zw";
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const el = (id) => document.getElementById(id);
+  const log = (x) => el("out").textContent = (typeof x === "string") ? x : JSON.stringify(x, null, 2);
+
+  // ===== Dates utils =====
+  function iso(d){ return d.toISOString().slice(0,10); }
+  function addDays(d, n){ const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+  function startOfWeekMonday(d){
+    const x = new Date(d);
+    const day = x.getDay();
+    const diff = (day === 0 ? -6 : 1 - day);
+    x.setDate(x.getDate()+diff);
+    x.setHours(0,0,0,0);
+    return x;
+  }
+  const fmtDay = new Intl.DateTimeFormat("fr-FR", { weekday:"short" });
+  const fmtDate = new Intl.DateTimeFormat("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" });
+  function labelDay(d){
+    const w = fmtDay.format(d).replace(".", "");
+    const dd = fmtDate.format(d);
+    return w.charAt(0).toUpperCase() + w.slice(1) + " " + dd;
+  }
+
+  const DAYS = 14;
+  let currentStart = startOfWeekMonday(new Date());
+  function syncStartInput(){ el("start").value = iso(currentStart); }
+
+  // ===== Auth/profile =====
+  async function getSession(){
+    const { data, error } = await supabase.auth.getSession();
+    if(error) throw error;
+    return data.session || null;
+  }
+  async function loadProfile(){
+    const s = await getSession();
+    if(!s){
+      el("who").innerHTML = `<span class="bad">pas de session</span>`;
+      return null;
+    }
+    const { data, error } = await supabase
+      .from("user_profiles")
+      .select("role, display_name")
+      .eq("user_id", s.user.id)
+      .maybeSingle();
+    if(error){ log("Erreur user_profiles: " + error.message); return null; }
+    el("who").innerHTML = `Connecté: <span class="ok">${data?.display_name || s.user.email}</span> — rôle: <b>${data?.role || "?"}</b>`;
+    return data;
+  }
+
+  function renderHeader(startDate){
+    const thead = el("thead");
+    const tr = document.createElement("tr");
+
+    const th0 = document.createElement("th");
+    th0.className = "nameCol";
+    th0.textContent = "Salarié";
+    tr.appendChild(th0);
+
+    for(let i=0;i<DAYS;i++){
+      const d = addDays(startDate, i);
+      const th = document.createElement("th");
+      th.textContent = labelDay(d);
+      tr.appendChild(th);
+    }
+
+    thead.innerHTML = "";
+    thead.appendChild(tr);
+  }
+
+  function tag(text, cls){
+    const s = document.createElement("span");
+    s.className = "tag " + cls;
+    s.textContent = text;
+    return s;
+  }
+
+  // ===== Data loaders =====
+  async function loadEmployees(){
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, first_name, last_name, is_active")
+      .eq("is_active", true)
+      .order("last_name", { ascending: true });
+
+    if(error) throw error;
+    return data || [];
+  }
+
+  async function loadAssignmentsRange(startDate, endDate){
+    const { data, error } = await supabase
+      .from("assignments")
+      .select("employee_id, activity, assign_date, role, shift, status, is_pf")
+      .gte("assign_date", iso(startDate))
+      .lte("assign_date", iso(endDate));
+
+    if(error) throw error;
+
+    // Map: employee_id|date -> list tags
+    const map = new Map();
+    for(const a of (data||[])){
+      const d = (a.assign_date||"").slice(0,10);
+      const key = `${a.employee_id}|${d}`;
+      if(!map.has(key)) map.set(key, []);
+      const shift = (a.shift && a.shift !== "JOUR") ? ` ${a.shift}` : "";
+      map.get(key).push({ text: `${a.activity} ${a.role}${shift}`, cls:"t-asg" });
+    }
+    return map;
+  }
+
+  async function loadUnavailabilitiesRange(startDate, endDate){
+    // Si table/colonnes différentes, la page affichera l'erreur dans console.
+    const { data, error } = await supabase
+      .from("unavailabilities")
+      .select("employee_id, start_date, end_date, type, hours")
+      .lte("start_date", iso(endDate))
+      .gte("end_date", iso(startDate));
+
+    if(error) throw error;
+
+    // Map: employee_id|date -> list tags
+    const map = new Map();
+    for(const u of (data||[])){
+      const s = new Date(u.start_date + "T00:00:00");
+      const e = new Date(u.end_date + "T00:00:00");
+      for(let d = new Date(s); d <= e; d = addDays(d, 1)){
+        const key = `${u.employee_id}|${iso(d)}`;
+        if(!map.has(key)) map.set(key, []);
+        const t = (u.type || "INDISPO").toUpperCase();
+        if(t === "ROULAGE"){
+          const hrs = (u.hours ? ` (${u.hours}h)` : "");
+          map.get(key).push({ text: `ROULAGE${hrs}`, cls:"t-roulage" });
+        }else{
+          map.get(key).push({ text: t, cls:"t-abs" });
+        }
+      }
+    }
+    return map;
+  }
+
+  function fullName(e){
+    const fn = (e.first_name||"").trim();
+    const ln = (e.last_name||"").trim();
+    return (fn + " " + ln).trim() || e.id;
+  }
+
+  function renderBody(employees, startDate, asgMap, unavMap){
+    const tbody = el("tbody");
+    tbody.innerHTML = "";
+
+    for(const emp of employees){
+      const tr = document.createElement("tr");
+
+      const tdName = document.createElement("td");
+      tdName.className = "nameCol";
+      tdName.innerHTML = `<b>${fullName(emp)}</b>`;
+      tr.appendChild(tdName);
+
+      for(let i=0;i<DAYS;i++){
+        const d = iso(addDays(startDate, i));
+        const td = document.createElement("td");
+
+        const key = `${emp.id}|${d}`;
+        const items = [];
+
+        // Affectations
+        if(asgMap.has(key)) items.push(...asgMap.get(key));
+
+        // Indispos
+        if(unavMap && unavMap.has(key)) items.push(...unavMap.get(key));
+
+        if(items.length === 0){
+          td.innerHTML = `<span class="muted">—</span>`;
+        }else{
+          for(const it of items){
+            td.appendChild(tag(it.text, it.cls));
+          }
+        }
+
+        tr.appendChild(td);
+      }
+
+      tbody.appendChild(tr);
+    }
+  }
+
+  // ===== Navigation =====
+  el("prevWeek").onclick = () => { currentStart = addDays(currentStart, -7); syncStartInput(); };
+  el("nextWeek").onclick = () => { currentStart = addDays(currentStart, 7); syncStartInput(); };
+  el("today").onclick = () => { currentStart = startOfWeekMonday(new Date()); syncStartInput(); };
+
+  // ===== Load =====
+  el("btnLoad").onclick = async () => {
+    try{
+      log("Chargement...");
+      const profile = await loadProfile();
+      if(!profile){ log("❌ pas de session: retourne à l’accueil et connecte-toi."); return; }
+
+      currentStart = startOfWeekMonday(new Date(el("start").value + "T00:00:00"));
+      syncStartInput();
+
+      const startDate = new Date(currentStart);
+      const endDate = addDays(startDate, DAYS - 1);
+
+      renderHeader(startDate);
+
+      const employees = await loadEmployees();
+      const asgMap = await loadAssignmentsRange(startDate, endDate);
+
+      let unavMap = null;
+      try{
+        unavMap = await loadUnavailabilitiesRange(startDate, endDate);
+      }catch(e){
+        // On continue sans indispo
+        log("⚠️ Indisponibilités non chargées (table/colonnes absentes ou RLS): " + (e?.message || e));
+      }
+
+      renderBody(employees, startDate, asgMap, unavMap);
+
+      if(!unavMap){
+        log("✅ OK (affectations). Indispos: non disponibles.");
+      }else{
+        log("✅ OK (affectations + indispos).");
+      }
+    }catch(e){
+      log("❌ " + (e?.message || e));
+      console.error(e);
+    }
+  };
+
+  el("btnLogout").onclick = async () => {
+    await supabase.auth.signOut();
+    window.location.href = "./index.html";
+  };
+
+  // init
+  syncStartInput();
+  await loadProfile();
+</script>
+</body>
+</html>
