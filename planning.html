@@ -127,6 +127,49 @@
     el("who").innerHTML = `Connecté: <span class="ok">${data?.display_name || s.user.email}</span> — rôle: <b>${data?.role || "?"}</b>`;
     return data;
   }
+// ===== Chargement de la campagne active =====
+async function loadCampaign(machine, refDate){
+  // VP est une activité à part → pas de campagne
+  if(machine === "VP"){
+    return {
+      machine: "VP",
+      site: "VP",
+      mode: "VP",
+      label: "Activité VP (hors campagnes)"
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("machine", machine)
+    .lte("start_date", iso(refDate))
+    .gte("end_date", iso(refDate))
+    .limit(1)
+    .maybeSingle();
+
+  if(error){
+    throw new Error("Erreur chargement campagne : " + error.message);
+  }
+
+  if(!data){
+    throw new Error("Aucune campagne active trouvée pour " + machine);
+  }
+
+  // Déduction du mode
+  let mode;
+  if(data.at_phase === "MAINTENANCE"){
+    mode = "AT_HIR";
+  } else {
+    mode = data.cnpe_mode; // 1x8 ou 2x8
+  }
+
+  return {
+    ...data,
+    mode,
+    label: `Campagne ${data.site} – ${machine} – ${mode} – phase ${data.at_phase}`
+  };
+}
 
   // ===== Planning rows (postes) =====
   function baseRowsFor(activity, mode){
