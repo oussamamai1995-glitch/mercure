@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Planning Mercure — Login</title>
+  <title>Planning Mercure — Accueil</title>
   <style>
     body{font-family:system-ui;margin:16px;background:#0b1020;color:#e8eeff}
     .card{border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:14px;margin:12px 0;background:rgba(255,255,255,.04)}
@@ -15,7 +15,8 @@
     .muted{color:#a9b4d6;font-size:13px}
     .ok{color:#2ee59d}
     .bad{color:#ff6b6b}
-    a{color:#8ab4ff;text-decoration:none}
+    a{display:inline-block;margin:6px 0;color:#8ab4ff;text-decoration:none}
+    .links a{padding:10px 12px;border:1px solid rgba(255,255,255,.14);border-radius:12px;background:rgba(255,255,255,.04)}
   </style>
 </head>
 <body>
@@ -35,10 +36,13 @@
   <div class="card">
     <h3>Profil</h3>
     <pre id="roleBox">(vide)</pre>
-    <div class="row">
-      <button id="goPlanning">Aller au planning</button>
-      <button id="testEmployees">Test : lire employees</button>
+
+    <h3>Pages</h3>
+    <div class="links row">
+      <a href="./planning.html">Planning machine (ME1/ME2/VP)</a>
+      <a href="./planning_personnel.html">Planning personnel (salariés)</a>
     </div>
+
     <pre id="out">(résultats)</pre>
   </div>
 
@@ -111,31 +115,7 @@
     log("Déconnecté");
   };
 
-  el("goPlanning").onclick = async () => {
-    const s = await getSession();
-    if(!s){ log("❌ Connecte-toi d’abord."); return; }
-    window.location.href = "./planning.html";
-  };
-
-  el("testEmployees").onclick = async () => {
-    try{
-      log("Lecture employees...");
-      const s = await getSession();
-      if(!s){ log("❌ Connecte-toi d’abord."); return; }
-      const { data, error } = await supabase
-        .from("employees")
-        .select("id, first_name, last_name, email, phone, is_active")
-        .order("last_name", { ascending: true })
-        .limit(10);
-
-      if(error) throw error;
-      log(data);
-    }catch(e){
-      log("❌ " + (e?.message || e));
-    }
-  };
-
-  // Init simple (pas d’auto redirections)
+  // init
   try{
     await updateStatus();
     await loadRole();
