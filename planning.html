@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Planning Mercure — Planning</title>
+  <style>
+    body{font-family:system-ui;margin:16px;background:#0b1020;color:#e8eeff}
+    .top{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .card{border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:14px;margin:12px 0;background:rgba(255,255,255,.04)}
+    input,button,select{padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:#e8eeff}
+    button{cursor:pointer}
+    .muted{color:#a9b4d6;font-size:13px}
+    .ok{color:#2ee59d}
+    .bad{color:#ff6b6b}
+
+    .grid{overflow:auto;border:1px solid rgba(255,255,255,.10);border-radius:14px}
+    table{border-collapse:collapse;min-width:860px;width:100%}
+    th,td{border-bottom:1px solid rgba(255,255,255,.10);padding:10px;vertical-align:top}
+    th{position:sticky;top:0;background:#0b1020;z-index:2}
+    .roleCol{width:180px;position:sticky;left:0;background:#0b1020;z-index:1;border-right:1px solid rgba(255,255,255,.10)}
+    .cell{min-height:38px}
+    .pill{display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.18);margin:2px 4px 2px 0;font-size:12px}
+    .st-VALIDE{background:rgba(46,229,157,.12)}
+    .st-SOUMIS{background:rgba(138,180,255,.12)}
+    .st-BROUILLON{background:rgba(255,255,255,.08)}
+    .st-REFUSE{background:rgba(255,107,107,.12)}
+    .pf{border-style:dashed}
+    a{color:#8ab4ff;text-decoration:none}
+    pre{white-space:pre-wrap;background:rgba(0,0,0,.35);padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.10);overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h2 style="margin:0">Planning</h2>
+    <a href="./index.html">← retour</a>
+    <span id="who" class="muted"></span>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <label class="muted">Activité</label>
+      <select id="activity">
+        <option value="ME1">ME1</option>
+        <option value="ME2">ME2</option>
+        <option value="VP">VP</option>
+      </select>
+
+      <label class="muted">Mode</label>
+      <select id="mode">
+        <option value="1x8">1x8 (ou 1x10)</option>
+        <option value="2x8">2x8</option>
+        <option value="AT_HIR">AT HIR</option>
+      </select>
+
+      <label class="muted">Début</label>
+      <input id="start" type="date"/>
+
+      <label class="muted">Jours</label>
+      <select id="days">
+        <option value="7">7</option>
+        <option value="14">14</option>
+        <option value="28">28</option>
+      </select>
+
+      <button id="btnLoad">Charger</button>
+      <button id="btnLogout">Logout</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      Affichage: timeline par jour + lignes de postes.  
+      On lit <code>assignments</code> directement via Supabase (RLS).
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Planning (postes)</h3>
+    <div class="grid">
+      <table id="tbl">
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Alertes couverture (si vue dispo)</h3>
+    <div class="muted">On tente de lire <code>v_coverage_alerts_daily_summary</code>. Si elle n’existe pas, tu verras l’erreur.</div>
+    <button id="btnAlerts">Charger alertes</button>
+    <pre id="alertsOut">(vide)</pre>
+  </div>
+
+<script type="module">
+  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+  const SUPABASE_URL = "https://hgishjwhpvfxsmvtjgbf.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhnaXNoandocHZmeHNtdnRqZ2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MzA5NTYsImV4cCI6MjA4NTIwNjk1Nn0.3BZiQRWivik3h8S9CyHIff3e2F7M0Oudw5rP7dN5-Zw";
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const el = (id) => document.getElementById(id);
+
+  function iso(d){ return d.toISOString().slice(0,10); }
+  function addDays(d, n){ const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+
+  function baseRolesFor(activity, mode){
+    // 7 postes "Mercure"
+    const base = [
+      { label:"CC", role:"CC", shift:"JOUR" },
+      { label:"ACC", role:"ACC", shift:"JOUR" },
+      { label:"AT", role:"AT", shift:"JOUR" },
+      { label:"CPP", role:"CPP", shift:"JOUR" },
+      { label:"CPZ", role:"CPZ", shift:"JOUR" },
+      { label:"AIZ", role:"AIZ", shift:"JOUR" },
+      { label:"AIP", role:"AIP", shift:"JOUR" },
+    ];
+
+    // VP : ligne PCEO + 7 postes
+    if(activity === "VP"){
+      return [
+        { label:"PCEO", role:"PCEO", shift:"JOUR" },
+        ...base
+      ];
+    }
+
+    if(mode === "2x8"){
+      // doubles: CPP, CPZ, AIZ, AIP (AM/PM). CC/ACC/AT simples.
+      const rows = [
+        { label:"CC", role:"CC", shift:"JOUR" },
+        { label:"ACC", role:"ACC", shift:"JOUR" },
+        { label:"AT", role:"AT", shift:"JOUR" },
+        { label:"CPP AM", role:"CPP", shift:"AM" },
+        { label:"CPP PM", role:"CPP", shift:"PM" },
+        { label:"CPZ AM", role:"CPZ", shift:"AM" },
+        { label:"CPZ PM", role:"CPZ", shift:"PM" },
+        { label:"AIZ AM", role:"AIZ", shift:"AM" },
+        { label:"AIZ PM", role:"AIZ", shift:"PM" },
+        { label:"AIP AM", role:"AIP", shift:"AM" },
+        { label:"AIP PM", role:"AIP", shift:"PM" },
+      ];
+      return rows;
+    }
+
+    if(mode === "AT_HIR"){
+      // AT HIR: 1 CC OU ACC + 1 CPP + 1 CPZ + 1 AT
+      // On garde les 4 lignes (et CC/ACC sera visuel)
+      return [
+        { label:"CC/ACC", role:"CC", shift:"JOUR" }, // visuel: on accepte CC ou ACC, mais on garde une ligne
+        { label:"CPP", role:"CPP", shift:"JOUR" },
+        { label:"CPZ", role:"CPZ", shift:"JOUR" },
+        { label:"AT", role:"AT", shift:"JOUR" },
+      ];
+    }
+
+    // 1x8 / 1x10 : 7 postes requis
+    return base;
+  }
+
+  function renderTableHeader(startDate, days){
+    const thead = el("thead");
+    const tr = document.createElement("tr");
+
+    const th0 = document.createElement("th");
+    th0.className = "roleCol";
+    th0.textContent = "Poste";
+    tr.appendChild(th0);
+
+    for(let i=0;i<days;i++){
+      const d = addDays(startDate, i);
+      const th = document.createElement("th");
+      th.textContent = iso(d);
+      tr.appendChild(th);
+    }
+    thead.innerHTML = "";
+    thead.appendChild(tr);
+  }
+
+  function makePill(text, status, is_pf){
+    const span = document.createElement("span");
+    span.className = `pill st-${status || "BROUILLON"} ${is_pf ? "pf" : ""}`;
+    span.textContent = text;
+    return span;
+  }
+
+  function initials(first, last){
+    const fi = (first||"").trim().slice(0,1).toUpperCase();
+    const li = (last||"").trim().slice(0,1).toUpperCase();
+    return (fi && li) ? `${first} ${li}.` : (first || last || "");
+  }
+
+  function renderBody(rows, dates, map){
+    const tbody = el("tbody");
+    tbody.innerHTML = "";
+
+    for(const r of rows){
+      const tr = document.createElement("tr");
+
+      const tdRole = document.createElement("td");
+      tdRole.className = "roleCol";
+      tdRole.innerHTML = `<b>${r.label}</b><div class="muted">${r.role} • ${r.shift}</div>`;
+      tr.appendChild(tdRole);
+
+      for(const dt of dates){
+        const td = document.createElement("td");
+        td.className = "cell";
+        const key = `${dt}|${r.role}|${r.shift}`;
+
+        const items = map.get(key) || [];
+        if(items.length === 0){
+          td.innerHTML = `<span class="muted">—</span>`;
+        }else{
+          for(const it of items){
+            const txt = initials(it.first_name, it.last_name);
+            td.appendChild(makePill(txt, it.status, it.is_pf));
+          }
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function ensureLogged(){
+    const { data } = await supabase.auth.getSession();
+    if(!data.session){
+      window.location.href = "./index.html";
+      return null;
+    }
+    return data.session;
+  }
+
+  async function loadProfile(){
+    const s = await ensureLogged();
+    if(!s) return null;
+
+    const { data, error } = await supabase
+      .from("user_profiles")
+      .select("role, display_name, employee_id, is_active")
+      .eq("user_id", s.user.id)
+      .maybeSingle();
+
+    if(error) throw error;
+    el("who").innerHTML = `Connecté: <span class="ok">${data?.display_name || s.user.email}</span> — rôle: <b>${data?.role || "?"}</b>`;
+    return data;
+  }
+
+  async function loadAssignments(activity, startDate, endDate){
+    // Table assignments doit contenir: employee_id, activity, assign_date, role, shift, is_pf, status
+    // + join employees pour afficher prénom/nom
+    // On fait 2 requêtes: assignments puis employees pour mapper (simple MVP)
+
+    const { data: asg, error: e1 } = await supabase
+      .from("assignments")
+      .select("id, employee_id, activity, assign_date, role, shift, is_pf, status")
+      .eq("activity", activity)
+      .gte("assign_date", iso(startDate))
+      .lte("assign_date", iso(endDate));
+
+    if(e1) throw e1;
+
+    const ids = [...new Set((asg||[]).map(x => x.employee_id).filter(Boolean))];
+    let empMap = new Map();
+    if(ids.length){
+      const { data: emps, error: e2 } = await supabase
+        .from("employees")
+        .select("id, first_name, last_name")
+        .in("id", ids);
+      if(e2) throw e2;
+      for(const e of emps) empMap.set(e.id, e);
+    }
+
+    // map key: date|role|shift -> list of assignments with names
+    const map = new Map();
+    for(const a of asg){
+      const d = (a.assign_date || "").slice(0,10);
+      const key = `${d}|${a.role}|${a.shift}`;
+      const emp = empMap.get(a.employee_id) || {};
+      const item = {
+        ...a,
+        first_name: emp.first_name,
+        last_name: emp.last_name
+      };
+      if(!map.has(key)) map.set(key, []);
+      map.get(key).push(item);
+    }
+
+    return map;
+  }
+
+  async function loadPlanning(){
+    const profile = await loadProfile();
+    if(!profile) return;
+
+    const activity = el("activity").value;
+    const mode = el("mode").value;
+
+    const startVal = el("start").value;
+    const days = parseInt(el("days").value, 10);
+
+    const startDate = startVal ? new Date(startVal + "T00:00:00") : new Date();
+    const dates = [];
+    for(let i=0;i<days;i++) dates.push(iso(addDays(startDate, i)));
+
+    const endDate = addDays(startDate, days-1);
+
+    renderTableHeader(startDate, days);
+
+    const rows = baseRolesFor(activity, mode);
+
+    // Charger assignments Supabase
+    const map = await loadAssignments(activity, startDate, endDate);
+
+    // Rendu
+    renderBody(rows, dates, map);
+  }
+
+  async function loadAlerts(){
+    try{
+      const activity = el("activity").value;
+      const { data, error } = await supabase
+        .from("v_coverage_alerts_daily_summary")
+        .select("activity, day_date, mode, missing_total, missing_items")
+        .eq("activity", activity)
+        .order("day_date", { ascending: true })
+        .limit(60);
+
+      if(error) throw error;
+      el("alertsOut").textContent = JSON.stringify(data, null, 2);
+    }catch(e){
+      el("alertsOut").textContent = "Erreur alertes: " + (e?.message || e);
+    }
+  }
+
+  // Init defaults
+  el("start").value = new Date().toISOString().slice(0,10);
+
+  el("btnLoad").onclick = async () => {
+    try{
+      await loadPlanning();
+    }catch(e){
+      alert("Erreur planning: " + (e?.message || e));
+      console.error(e);
+    }
+  };
+
+  el("btnAlerts").onclick = loadAlerts;
+
+  el("btnLogout").onclick = async () => {
+    await supabase.auth.signOut();
+    window.location.href = "./index.html";
+  };
+
+  // auto load
+  await loadPlanning();
+</script>
+</body>
+</html>
